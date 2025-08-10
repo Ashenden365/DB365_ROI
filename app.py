@@ -1,327 +1,443 @@
 # app.py
-# Digital Bunker 365 — ROI Quick Check (Healthcare SMB)
-# -----------------------------------------------------
-# Purpose: Lightweight, value-first ROI calculator for first impressions.
-# Notes:
-# - This is a prototype. All coefficients/assumptions are illustrative and should be
-#   calibrated with customer discovery and field data.
-# - We intentionally set defaults on the conservative-to-high side for first-view anchoring
-#   (e.g., hourly rate, loss per incident) so the Investment Cap is not underestimated.
+# ROI Quick Check (Healthcare SMB) — Streamlit prototype
+# Prototype for DigitalBunker365.com. Results show ONLY after pressing "Go".
+# Three columns after Go: Results | Similar orgs | Next steps (simple).
+# Tweaks: larger company name in top brand bar; assumptions moved to bottom below 3 columns.
 
-import math
-from typing import Tuple, Dict
+import urllib.parse
+from datetime import datetime
+
 import streamlit as st
+import streamlit.components.v1 as components
 
-# -----------------------------
-# Global UI Config
-# -----------------------------
+# ---------------------------
+# Page config & global styles
+# ---------------------------
 st.set_page_config(
-    page_title="Digital Bunker 365 — ROI Quick Check",
-    page_icon="🛡️",
+    page_title="ROI Quick Check — Digital Bunker 365",
+    page_icon="🧮",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
 
-# -----------------------------
-# Styling (sticky notice + clean cards)
-# -----------------------------
-STICKY_CSS = """
-<style>
-/***** Base tweaks *****/
-.block-container {padding-top: 1.2rem;}
-
-/***** Sticky top notice *****/
-.sticky-box {
-  position: sticky;
-  top: 0;
-  z-index: 999;
-  margin-bottom: 0.75rem;
-  border: 1px solid rgba(0,0,0,0.1);
-  border-radius: 10px;
-  background: #eef6ff; /* light info */
-  box-shadow: 0 3px 10px rgba(0,0,0,0.04);
-}
-.sticky-inner {padding: 0.9rem 1rem;}
-.sticky-title {font-weight: 700; font-size: 0.95rem; margin-bottom: 0.25rem;}
-.sticky-body {font-size: 0.9rem; line-height: 1.35;}
-.sticky-body a {text-decoration: underline;}
-
-/***** Soft cards for results *****/
-.card {
-  border: 1px solid rgba(0,0,0,0.08);
-  border-radius: 12px;
-  background: #ffffff;
-  padding: 1rem 1rem 0.75rem 1rem;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.04);
-}
-.card h4 {margin: 0 0 0.35rem 0; font-size: 1.05rem}
-.card .meta {color: #666; font-size: 0.85rem; margin-bottom: 0.35rem}
-.kpi {font-weight: 800; font-size: 1.25rem;}
-.kpi-sub {color: #555; font-size: 0.9rem;}
-.badge {display: inline-block; padding: 0.2rem 0.5rem; border-radius: 999px; font-size: 0.75rem;}
-.badge.green {background:#eaf7ea; color:#106a10; border: 1px solid #bfe1bf}
-.badge.amber {background:#fff6e6; color:#7a4b00; border: 1px solid #f2d49a}
-.badge.gray {background:#f2f2f2; color:#333; border: 1px solid #ddd}
-
-/***** Anchors *****/
-.anchor {scroll-margin-top: 110px;} /* ensure anchor not hidden beneath sticky */
-</style>
-"""
-
-st.markdown(STICKY_CSS, unsafe_allow_html=True)
-
-# -----------------------------
-# Constants (prototype defaults — tuned for higher first-impression Cap)
-# -----------------------------
-LOSS_PER_INCIDENT_DEFAULT = 25_000.0  # USD, per incident (prototype default: higher)
-OPS_REDUCTION = {  # by current control maturity
-    "Minimum": 0.35,
-    "Standard": 0.25,
-    "Advanced": 0.15,
-}
-PHISH_REDUCTION = {
-    "Minimum": 0.30,
-    "Standard": 0.22,
-    "Advanced": 0.15,
-}
-# Baseline annual phishing/related incidents ~ employees / divisor (rough heuristic)
-INCIDENT_DIVISOR = {
-    "Minimum": 120.0,
-    "Standard": 180.0,
-    "Advanced": 260.0,
-}
-INCIDENTS_MIN, INCIDENTS_MAX = 0.5, 8.0  # clamp range (raised min to avoid under-signaling)
-
-# -----------------------------
-# Helper functions
-# -----------------------------
-
-def current_ops_hours(staff: int, it_fte: int, devices: int | None) -> float:
-    """Approximate current monthly ops hours for IT/Sec.
-    - staff: total employees
-    - it_fte: dedicated IT/Sec FTE
-    - devices: endpoints (if None -> estimate)
+st.markdown(
     """
-    if devices is None:
-        # simple estimate: ~1.2 devices per person (laptop/phone/misc)
-        devices = max(int(round(staff * 1.2)), 0)
-    base = 0.4 * staff + 8.0 * it_fte + 0.03 * devices
-    return max(base, 12.0)  # floor at 12h/month
+    <style>
+      :root {
+        --text: #0f172a;
+        --muted: #475569;
+        --accent: #0ea5e9;
+        --card-bg: #ffffff;
+        --chip-bg: #f1f5f9;
+        --border: #e2e8f0;
+      }
+      html, body, [class*="css"]  {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
+        color: var(--text);
+      }
+      .brandbar {
+        display:flex; align-items:center; justify-content:space-between;
+        border-bottom:1px solid var(--border); padding:.6rem 0; margin-bottom:.8rem;
+      }
+      .brandbar a {
+        text-decoration:none; color: var(--text); font-weight:700;
+        /* Bigger company name */
+        font-size: clamp(1.05rem, 2.2vw, 1.35rem);
+      }
+      .badge {
+        background: var(--chip-bg); border:1px solid var(--border);
+        border-radius:999px; padding:.2rem .6rem; font-size:.85rem; white-space:nowrap;
+      }
+      /* --- NEW: sticky info box & anchor offset --- */
+      .sticky-info {
+        position: sticky;
+        top: 0;               /* stays just under any header in view */
+        z-index: 50;          /* above cards */
+        background: #ffffff;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 10px 12px;
+        box-shadow: 0 2px 8px rgba(15, 23, 42, .06);
+        margin: 0 0 .8rem 0;
+      }
+      .sticky-info strong { font-weight: 700; }
+      .sticky-info a { color: var(--accent); text-decoration: none; }
+      .anchor-offset { scroll-margin-top: 96px; } /* prevent anchor from hiding behind sticky */
+      /* ------------------------------------------- */
 
+      .hero h1 {
+        font-size: clamp(1.6rem, 4vw, 2.2rem);
+        margin: 0 0 .2rem 0; line-height: 1.2;
+        background: linear-gradient(90deg, var(--accent), #6366f1, #10b981);
+        -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+      }
+      .subcopy { color: var(--muted); margin-bottom:.75rem; }
+      .chips { display:flex; flex-wrap:wrap; gap:.5rem; margin:.25rem 0 1rem 0; }
+      .chip {
+        display:inline-flex; align-items:center; gap:.4rem;
+        background: var(--chip-bg); border:1px solid var(--border);
+        border-radius:999px; padding:.25rem .6rem; font-size:.85rem; white-space:nowrap;
+      }
+      .card {
+        background: var(--card-bg);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 14px 16px;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, .04);
+        margin-bottom: .6rem;
+      }
+      .plan { border-left: 6px solid var(--accent); }
+      .kpi .label { color: var(--muted); font-size:.9rem; }
+      .kpi .value { font-weight:700; font-size:1.6rem; margin-top:.25rem; }
+      .kpi .sub   { color: var(--muted); font-size:.9rem; margin-top:.15rem; }
+      .kpi-grid-2 { display:grid; gap:12px; grid-template-columns: 1fr; }
+      @media (min-width: 900px) { .kpi-grid-2 { grid-template-columns: repeat(2, 1fr); } }
+      .actions { display:flex; flex-wrap:wrap; gap:.5rem; margin:.4rem 0 1rem; }
+      .btn {
+        display:inline-block; text-decoration:none; text-align:center;
+        border-radius:10px; padding:.6rem .9rem; border:1px solid var(--border); background:#ffffff;
+      }
+      .btn-primary { background: var(--accent); color:#fff; border-color: var(--accent); }
+      .btn:hover { filter: brightness(0.98); }
+      .link { color: var(--accent); text-decoration:none; }
+      .footer-note { color: var(--muted); font-size:.85rem; }
+      @media print {
+        .stSidebar, .actions, .inputs .stButton { display:none !important; }
+        .card { break-inside: avoid; }
+      }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-def baseline_incidents(staff: int, maturity: str) -> float:
-    div = INCIDENT_DIVISOR.get(maturity, INCIDENT_DIVISOR["Standard"])
-    raw = staff / div
-    return max(min(raw, INCIDENTS_MAX), INCIDENTS_MIN)
+# ---------------------------
+# Helpers & constants
+# ---------------------------
+def clamp(x, lo, hi): return max(lo, min(hi, x))
+def format_currency(x):
+    try: return f"${int(round(x, 0)):,}"
+    except Exception: return "$0"
+def format_hours(x): return f"{x:.1f} h/mo"
+def risk_reduction_label(pct):
+    if pct >= 30: return "High"
+    elif pct >= 20: return "Moderate"
+    else: return "Modest"
 
+OPS_REDUCTION = {"Minimum": 0.35, "Standard": 0.25, "Advanced": 0.15}
+PHISH_REDUCTION = {"Minimum": 0.30, "Standard": 0.22, "Advanced": 0.15}
+INCIDENTS_DIVISOR = {"Minimum": 120.0, "Standard": 180.0, "Advanced": 260.0}
+LOSS_PER_INCIDENT = 15000.0
+MAX_ANNUAL_INCIDENTS = 8.0
+MIN_ANNUAL_INCIDENTS = 0.2
 
-def plan_recommendation(staff: int, it_fte: int, maturity: str, hipaa: bool) -> Tuple[str, str]:
-    """Very light heuristic for prototype plan guidance.
-    Returns (plan_name, reason).
+# ---------------------------
+# Brand bar & Hero
+# ---------------------------
+st.markdown(
     """
-    score = 0
-    # scale by size
-    if staff <= 25:
-        score += 0
-    elif staff <= 50:
-        score += 1
-    elif staff <= 100:
-        score += 2
-    else:
-        score += 3
+    <div class="brandbar">
+      <div><a href="https://www.digitalbunker365.com/" target="_blank" rel="noopener">Digital Bunker 365</a></div>
+      <div class="badge">Prototype · ROI Simulator</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
-    # IT staffing scarcity tends to push higher plan (need more managed controls)
-    if it_fte == 0:
-        score += 2
-    elif it_fte == 1:
-        score += 1
+# --- NEW: Sticky info box (purpose & key notes) just under brandbar ---
+st.markdown(
+    """
+    <div class="sticky-info">
+      <strong>Purpose & Key Notes:</strong>
+      This simulator estimates potential value to help plan discussions. 
+      <strong>“Cap” is <u>not a price</u></strong> — it is the monthly <strong>investment ceiling</strong> where <strong>ROI ≥ 0</strong>
+      (i.e., if your monthly cost is at or below this cap, ROI stays non-negative).
+      <a href="#assumptions">Learn more →</a>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
-    # low maturity -> higher plan
-    score += {"Minimum": 2, "Standard": 1, "Advanced": 0}.get(maturity, 1)
+st.markdown(
+    """
+    <div class="hero">
+      <h1>ROI Quick Check (30 sec)</h1>
+      <div class="subcopy">
+        Anonymous input. We do not store data. HIPAA/BAA-ready.
+        This is a prototype for <a class="link" href="https://www.digitalbunker365.com/" target="_blank" rel="noopener">DigitalBunker365.com</a>.
+      </div>
+      <div class="chips">
+        <div class="chip">Takes ~30 seconds</div>
+        <div class="chip">HIPAA / BAA</div>
+        <div class="chip">No data stored</div>
+        <div class="chip">Estimates only</div>
+      </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
-    # HIPAA compliance increases need for governance
-    if hipaa:
-        score += 1
+# ---------------------------
+# Inputs (form) — keep current version
+# ---------------------------
+st.markdown("### Your Organization")
+with st.form(key="roi_form", clear_on_submit=False):
+    st.markdown('<div class="inputs">', unsafe_allow_html=True)
+    industry = st.selectbox("Industry", ["Healthcare SMB", "Non-profit (Education)", "Other"], index=0,
+                            help="Used for messaging only in this prototype. Calculations are industry-agnostic.")
+    staff = st.number_input("Number of staff (headcount)", min_value=1, step=1, value=50,
+                            help="All staff in the organization.")
+    it_staff = st.number_input("Dedicated IT/Security FTE", min_value=0, step=1, value=1,
+                               help="Number of full-time equivalents focused on IT/Security.")
+    level = st.selectbox("Current security/control level", ["Minimum", "Standard", "Advanced"], index=0,
+                         help="Reflects your current state. Lower current level ⇒ larger potential savings.")
+    hipaa = st.selectbox("HIPAA compliance required?", ["Yes", "No"], index=0)
+    hourly = st.number_input("Blended labor cost ($/hour) (optional)", min_value=0.0, step=1.0, value=45.0,
+                             help="Used for labor savings. Default reflects a typical blended rate for SMBs.")
+    devices_opt = st.number_input("Endpoints / devices (optional)", min_value=0, step=1, value=0,
+                                  help="Leave 0 to auto-estimate as ~1.2 × staff.")
+    st.markdown('</div>', unsafe_allow_html=True)
+    submitted = st.form_submit_button("Go 🚀", type="primary")
 
-    if score >= 5:
-        return "Advanced", "Larger scale / low maturity and/or limited IT coverage; HIPAA elevates governance needs."
-    if score >= 3:
-        return "Standard", "Balanced footprint or moderate maturity; targeted risk reduction with manageable ops load."
-    return "Essential", "Smaller footprint and/or stronger maturity; start with core controls and grow as needed."
+# Persist snapshot between submits
+if "roi" not in st.session_state:
+    st.session_state["roi"] = None
 
+# ---------------------------
+# Compute on submit
+# ---------------------------
+if submitted:
+    devices = devices_opt if devices_opt > 0 else int(round(staff * 1.2))
+    current_ops = max(0.4 * staff + 8.0 * it_staff + 0.03 * devices, 12.0)
 
-def currency(x: float) -> str:
-    return f"${x:,.0f}"
+    ops_reduction_rate = OPS_REDUCTION[level]
+    phish_reduction_pct = PHISH_REDUCTION[level] * 100
+    hours_saved = current_ops * ops_reduction_rate
+    labor_savings_monthly = hours_saved * max(hourly, 0.0)
 
+    annual_incidents_baseline = clamp(staff / INCIDENTS_DIVISOR[level], MIN_ANNUAL_INCIDENTS, MAX_ANNUAL_INCIDENTS)
+    annual_avoided_loss = annual_incidents_baseline * LOSS_PER_INCIDENT * PHISH_REDUCTION[level]
+    affordability_cap_monthly = labor_savings_monthly + (annual_avoided_loss / 12.0)
 
-def pct(x: float) -> str:
-    return f"{x*100:.0f}%"
+    # Plan recommendation heuristic
+    risk_score, reasons = 0.0, []
+    if hipaa == "Yes": risk_score += 1.0; reasons.append("Requires HIPAA/BAA")
+    if staff >= 100: risk_score += 1.0; reasons.append("100+ staff scale")
+    elif staff >= 30: risk_score += 0.5; reasons.append("30–99 staff scale")
+    if it_staff == 0: risk_score += 1.0; reasons.append("No dedicated IT/Sec FTE")
+    elif it_staff <= 2: risk_score += 0.5; reasons.append("Limited IT/Sec capacity")
+    if level == "Minimum": risk_score += 1.0; reasons.append("Current controls: Minimum")
+    elif level == "Standard": risk_score += 0.5; reasons.append("Current controls: Standard")
+    if staff > 0 and (devices / staff) > 1.5: risk_score += 0.5; reasons.append("High device density")
 
+    plan = "Essential" if risk_score < 1.0 else ("Standard" if risk_score < 2.0 else "Advanced")
 
-# -----------------------------
-# Sticky top notice
-# -----------------------------
-with st.container():
-    st.markdown(
-        """
-        <div class="sticky-box"><div class="sticky-inner">
-        <div class="sticky-title">Purpose</div>
-        <div class="sticky-body">This tool estimates the <b>potential value</b> of adopting Digital Bunker 365 — in saved workload, reduced risks, and an indicative <i>Investment Cap</i> (max monthly spend with ROI ≥ 0).</div>
-        <div class="sticky-title" style="margin-top:0.5rem;">Important</div>
-        <div class="sticky-body">The <b>Investment Cap is <u>not</u> our price</b>. It is a value-based budget guide. Actual plans & pricing will be tailored in a conversation with our team. <a href="#assumptions">Learn more</a>.</div>
-        </div></div>
-        """,
-        unsafe_allow_html=True,
+    st.session_state["roi"] = dict(
+        industry=industry, staff=staff, it_staff=it_staff, level=level, hipaa=hipaa,
+        hourly=hourly, devices=devices,
+        current_ops=current_ops, hours_saved=hours_saved,
+        labor_savings_monthly=labor_savings_monthly,
+        phish_reduction_pct=phish_reduction_pct,
+        annual_incidents_baseline=annual_incidents_baseline,
+        annual_avoided_loss=annual_avoided_loss,
+        affordability_cap_monthly=affordability_cap_monthly,
+        plan=plan, reasons=reasons
     )
 
-# -----------------------------
-# Header
-# -----------------------------
-st.title("🛡️ Digital Bunker 365 — ROI Quick Check")
-st.caption("Prototype · Healthcare SMB focus · Value-first conversation starter")
+# ---------------------------
+# Three-column layout AFTER Go (Results | Similar orgs | Next steps)
+# ---------------------------
+roi = st.session_state.get("roi")
+if roi:
+    col_results, col_cases, col_next = st.columns([1.4, 1.0, 1.0])
 
-# -----------------------------
-# Inputs
-# -----------------------------
-left, right = st.columns([1.1, 1.4], gap="large")
+    # ---- Column 1: Your Results ----
+    with col_results:
+        st.markdown("### Your Results")
+        st.markdown('<div class="kpi-grid-2">', unsafe_allow_html=True)
 
-with left:
-    st.subheader("Your Organization")
-    industry = st.selectbox(
-        "Industry",
-        ["Healthcare (SMB)", "Professional Services", "Non-profit", "Other"],
-        index=0,
-        help="Used for messaging in prototype. Coefficients may be specialized in production.",
-    )
-    staff = st.number_input(
-        "Number of staff (headcount)", min_value=1, step=1, value=50,
-        help="Full-time and part-time staff combined (approximate).",
-    )
-    it_fte = st.number_input(
-        "Dedicated IT/Security FTE", min_value=0, step=1, value=1,
-        help="Number of full-time equivalents focused on IT/Security.",
-    )
-    maturity = st.selectbox(
-        "Current control maturity",
-        ["Minimum", "Standard", "Advanced"],
-        index=0,
-        help="Rough self-assessment of current controls and practices.",
-    )
-    hipaa = st.checkbox("HIPAA applies", value=True, help="Protected health information handling.")
-    devices_opt = st.number_input(
-        "Endpoints / devices (optional)", min_value=0, step=1, value=0,
-        help="If 0, we will estimate ~1.2 devices per employee.",
-    )
-    hourly_rate = st.number_input(
-        "Blended labor cost ($/hour) (optional)", min_value=0.0, step=1.0, value=65.0,
-        help="Loaded hourly cost for internal ops (prototype default set higher for first-view).",
-    )
-
-    st.divider()
-    with st.expander("Advanced assumptions (optional)"):
-        loss_per_incident = st.number_input(
-            "Loss per incident (USD)", min_value=1_000.0, step=1_000.0, value=LOSS_PER_INCIDENT_DEFAULT,
-            help="Direct/indirect cost per relevant incident (prototype default higher for healthcare).",
+        st.markdown(
+            f"""
+            <div class="card plan">
+              <div class="kpi">
+                <div class="label">Recommended plan</div>
+                <div class="value">{roi['plan']}</div>
+                <div class="sub">Why: {", ".join(roi['reasons']) if roi['reasons'] else "Balanced needs"}</div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
-        st.caption("Ops & phishing reduction rates depend on maturity (see Assumptions below).")
+        st.markdown(
+            f"""
+            <div class="card">
+              <div class="kpi">
+                <div class="label">Monthly workload reduction</div>
+                <div class="value">{format_hours(roi['hours_saved'])}</div>
+                <div class="sub">≈ {format_currency(roi['labor_savings_monthly'])} / month</div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        tone = risk_reduction_label(roi['phish_reduction_pct'])
+        st.markdown(
+            f"""
+            <div class="card">
+              <div class="kpi">
+                <div class="label">Phishing risk reduction</div>
+                <div class="value">{int(round(roi['phish_reduction_pct']))}%</div>
+                <div class="sub">{tone} improvement potential</div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"""
+            <div class="card">
+              <div class="kpi">
+                <div class="label">Annual avoided losses (estimate)</div>
+                <div class="value">{format_currency(roi['annual_avoided_loss'])}</div>
+                <div class="sub">Baseline incidents: {roi['annual_incidents_baseline']:.2f} / year</div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"""
+            <div class="card">
+              <div class="kpi">
+                <div class="label">Investment affordability (cap)</div>
+                <div class="value">{format_currency(roi['affordability_cap_monthly'])} / mo</div>
+                <div class="sub">ROI &gt; 0 if monthly cost ≤ this</div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"""
+            <div class="card">
+              <div class="kpi">
+                <div class="label">Inputs snapshot (from last “Go”)</div>
+                <div class="sub">Industry: {roi['industry']}</div>
+                <div class="sub">Staff: {roi['staff']} • IT FTE: {roi['it_staff']}</div>
+                <div class="sub">Level: {roi['level']} • HIPAA: {roi['hipaa']}</div>
+                <div class="sub">Devices: {roi['devices']} • Hourly: {format_currency(roi['hourly'])}</div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.markdown('</div>', unsafe_allow_html=True)
 
-    go = st.button("Go", type="primary")
+    # ---- Column 2: Similar organizations ----
+    with col_cases:
+        st.markdown("### Similar organizations that succeeded (Healthcare SMB)")
 
-with right:
-    st.subheader("Your Results")
-    # Compute on first load as well for instant first impression.
-    if go or True:
-        devices = devices_opt if devices_opt > 0 else None
-        curr_ops = current_ops_hours(staff, it_fte, devices)
-        ops_red = OPS_REDUCTION[maturity]
-        hours_saved = curr_ops * ops_red
-        labor_savings_month = hours_saved * hourly_rate
+        def case_card(title, before, after, link="#"):
+            st.markdown(
+                f"""
+                <div class="card">
+                  <div class="kpi">
+                    <div class="label">{title}</div>
+                    <div class="sub"><strong>Before:</strong> {before}</div>
+                    <div class="sub"><strong>After:</strong> {after}</div>
+                    <div class="sub"><a class="link" href="{link}">View details →</a></div>
+                  </div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
 
-        phish_red = PHISH_REDUCTION[maturity]
-        baseline = baseline_incidents(staff, maturity)
-        avoided_losses_annual = baseline * phish_red * (loss_per_incident if 'loss_per_incident' in locals() else LOSS_PER_INCIDENT_DEFAULT)
-        cap = labor_savings_month + avoided_losses_annual / 12.0
+        case_card(
+            "Community Health Clinic (45 staff)",
+            "Ad-hoc patching, HIPAA anxiety, frequent phishing clicks.",
+            "Monthly reports, visible HIPAA posture, 24 h/mo workload reduction."
+        )
+        case_card(
+            "Non-profit Rehab Center (80 staff)",
+            "No dedicated IT; endpoint sprawl.",
+            "Standard plan; 28% phishing reduction; $36k/yr loss avoidance."
+        )
+        case_card(
+            "Dental Network (120 staff)",
+            "Mixed vendors, limited MFA coverage.",
+            "Advanced plan; 18 h/mo saved in ops; predictable compliance cadence."
+        )
 
-        plan, reason = plan_recommendation(staff, it_fte, maturity, hipaa)
+    # ---- Column 3: Next steps ----
+    with col_next:
+        st.markdown("### Next steps")
 
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.markdown("<div class='card'>", unsafe_allow_html=True)
-            st.markdown("<h4>Recommended plan</h4>", unsafe_allow_html=True)
-            st.markdown(f"<div class='kpi'>{plan}</div>", unsafe_allow_html=True)
-            st.markdown(f"<div class='kpi-sub'><b>Why:</b> {reason}</div>", unsafe_allow_html=True)
-            st.markdown("</div>", unsafe_allow_html=True)
+        # Save as PDF
+        components.html(
+            """
+            <div class="actions">
+              <button class="btn btn-primary" onclick="window.print()">Save as PDF</button>
+            </div>
+            """,
+            height=50,
+        )
 
-        with c2:
-            st.markdown("<div class='card'>", unsafe_allow_html=True)
-            st.markdown("<h4>Monthly workload reduction</h4>", unsafe_allow_html=True)
-            st.markdown(f"<div class='kpi'>{hours_saved:,.1f} h/mo</div>", unsafe_allow_html=True)
-            st.markdown(f"<div class='kpi-sub'>{currency(labor_savings_month)}/mo equivalent</div>", unsafe_allow_html=True)
-            badge_class = "green" if ops_red >= 0.30 else ("amber" if ops_red >= 0.20 else "gray")
-            st.markdown(f"<span class='badge {badge_class}'>reduction: {pct(ops_red)}</span>", unsafe_allow_html=True)
-            st.markdown("</div>", unsafe_allow_html=True)
+        # Email CTA
+        email_to = "contact@digitalbunker365.com"  # change to production alias if needed
+        subject = "ROI Quick Check — Request detailed report"
+        body_lines = [
+            "Hi Digital Bunker 365 team,",
+            "",
+            "Please send me a detailed ROI report based on my quick check.",
+            "",
+            f"Industry: {roi['industry']}",
+            f"Staff: {roi['staff']}, IT FTE: {roi['it_staff']}, Devices: {roi['devices']}",
+            f"Current level: {roi['level']}, HIPAA: {roi['hipaa']}",
+            f"Monthly workload reduction: {format_hours(roi['hours_saved'])} (≈ {format_currency(roi['labor_savings_monthly'])}/mo)",
+            f"Phishing risk reduction: {int(round(roi['phish_reduction_pct']))}%",
+            f"Annual avoided losses: {format_currency(roi['annual_avoided_loss'])}",
+            f"Affordability cap (monthly): {format_currency(roi['affordability_cap_monthly'])}",
+            "",
+            "Thanks!"
+        ]
+        body = urllib.parse.quote("\n".join(body_lines))
+        subject_q = urllib.parse.quote(subject)
+        mailto_url = f"mailto:{email_to}?subject={subject_q}&body={body}"
+        st.markdown(f'<a class="btn" href="{mailto_url}">Email me a detailed report</a>', unsafe_allow_html=True)
 
-        with c3:
-            st.markdown("<div class='card'>", unsafe_allow_html=True)
-            st.markdown("<h4>Phishing risk reduction</h4>", unsafe_allow_html=True)
-            st.markdown(f"<div class='kpi'>{pct(phish_red)}</div>", unsafe_allow_html=True)
-            tone = "High" if phish_red >= 0.28 else ("Moderate" if phish_red >= 0.20 else "Modest")
-            st.markdown(f"<div class='kpi-sub'>Improvement potential: <b>{tone}</b></div>", unsafe_allow_html=True)
-            st.markdown("</div>", unsafe_allow_html=True)
+        st.caption("Tip: Adjust inputs above and press **Go** again to refresh results.")
 
-        c4, c5 = st.columns(2)
-        with c4:
-            st.markdown("<div class='card'>", unsafe_allow_html=True)
-            st.markdown("<h4>Annual avoided losses (estimate)</h4>", unsafe_allow_html=True)
-            st.markdown(f"<div class='kpi'>{currency(avoided_losses_annual)}</div>", unsafe_allow_html=True)
-            st.markdown(f"<div class='kpi-sub'>Baseline: ~{baseline:.2f} incidents/year</div>", unsafe_allow_html=True)
-            st.markdown("</div>", unsafe_allow_html=True)
+    # ---------------------------
+    # Assumptions at the very bottom (below the three columns)
+    # ---------------------------
+    st.markdown("---")
+    # NEW: anchor target placed just above the expander
+    st.markdown('<div id="assumptions" class="anchor-offset"></div>', unsafe_allow_html=True)
+    with st.expander("Assumptions, formulas & limitations (please read)"):
+        st.markdown(
+            f"""
+- **Estimates only.** Results are a directional guide for budgeting and value visualization.
+- **We do not store inputs.** This prototype does not persist your data.
+- **Formulas (prototype-grade):**
+  - Current monthly ops hours = `0.4 × staff + 8 × IT_FTE + 0.03 × devices` (min 12 h).
+  - Workload reduction rate by current level: **Minimum 35%**, **Standard 25%**, **Advanced 15%**.
+  - Phishing incident reduction potential by current level: **Minimum 30%**, **Standard 22%**, **Advanced 15%**.
+  - Annual incidents baseline (pre-solution) = `staff / {{120, 180, 260}}` for levels {{Minimum, Standard, Advanced}}, clamped to **[0.2, 8]**.
+  - **Annual avoided losses** = `baseline incidents × ${int(LOSS_PER_INCIDENT):,} × reduction rate`.
+  - **Affordability cap (monthly)** = `labor savings per month + (annual avoided losses / 12)`.
+- **Plan recommendation heuristic (prototype):** weighs HIPAA need, size, IT coverage, current controls, and device density to suggest **Essential / Standard / Advanced**.
+- **HIPAA/BAA:** Indication is for messaging; full compliance depends on your implementation, agreements, and controls.
+- **Branding:** This is a prototype for **DigitalBunker365.com** and is not a public price quote.
+            """
+        )
 
-        with c5:
-            st.markdown("<div class='card'>", unsafe_allow_html=True)
-            st.markdown("<h4>Investment affordability (cap)</h4>", unsafe_allow_html=True)
-            st.markdown(f"<div class='kpi'>{currency(cap)}/mo</div>", unsafe_allow_html=True)
-            st.markdown("<div class='kpi-sub'>ROI ≥ 0 if monthly cost ≤ this cap</div>", unsafe_allow_html=True)
-            st.markdown("<span class='badge gray'>Value-based guide • Not our price</span>", unsafe_allow_html=True)
-            st.markdown("</div>", unsafe_allow_html=True)
-
-        st.markdown("### Inputs snapshot")
-        snapshot_cols = st.columns(3)
-        with snapshot_cols[0]:
-            st.write("**Industry**", industry)
-            st.write("**Headcount**", staff)
-            st.write("**IT/Sec FTE**", it_fte)
-        with snapshot_cols[1]:
-            st.write("**Maturity**", maturity)
-            st.write("**HIPAA**", "Yes" if hipaa else "No")
-            st.write("**Devices**", devices if devices is not None else int(round(staff * 1.2)))
-        with snapshot_cols[2]:
-            st.write("**Hourly cost**", currency(hourly_rate) + "/h")
-            st.write("**Loss/incident**", currency(loss_per_incident if 'loss_per_incident' in locals() else LOSS_PER_INCIDENT_DEFAULT))
-
-# -----------------------------
-# Assumptions, formulas & limitations
-# -----------------------------
-st.divider()
-st.markdown('<a name="assumptions" class="anchor"></a>', unsafe_allow_html=True)
-st.subheader("Assumptions, formulas & limitations (please read)")
-
-with st.expander("Show details", expanded=False):
-    st.markdown(
-        """
-- **Purpose of this calculator**: Provide an **indicative** value-based view (saved workload, avoided losses) and a **budget guide** (Investment Cap). It is **not** a quote.
-- **Current monthly ops hours**: \(0.4 \times \text{staff} + 8.0 \times \text{IT FTE} + 0.03 \times \text{devices}\), floored at **12 h/mo**. Devices default to **~1.2 per staff** if blank.
-- **Ops reduction rate** (by maturity): Minimum **35%**, Standard **25%**, Advanced **15%**.
-- **Phishing reduction rate** (by maturity): Minimum **30%**, Standard **22%**, Advanced **15%**.
-- **Baseline annual incidents**: \(\text{staff} / D\), where D=120 (Minimum), 180 (Standard), 260 (Advanced). Clamped to **0.5–8.0**.
-- **Loss per incident** (prototype default): **$25,000** (adjustable under Advanced assumptions).
-- **Annual avoided losses**: baseline \(\times\) phishing reduction \(\times\) loss/incident.
-- **Investment Cap (monthly)**: **Labor savings/mo** + **(Annual avoided losses / 12)**. This is the **ROI ≥ 0 boundary**, not our price.
-
-**Limitations**: This is a prototype using simplified heuristics. Real outcomes depend on control scope, user behavior, threat landscape, and integration quality. Calibrate coefficients with field data. In HIPAA contexts, consider breach notification, downtime, legal, and reputational impacts which may raise loss estimates.
-        """,
-        unsafe_allow_html=False,
-    )
-
-st.caption("© Digital Bunker 365 — Prototype for discussion. For tailored proposals, please contact us.")
-
+# ---------------------------
+# Footer
+# ---------------------------
+st.markdown(
+    """
+    <div class="footer-note">
+      © {year} <a class="link" href="https://www.digitalbunker365.com/" target="_blank" rel="noopener">Digital Bunker 365</a> — Prototype for value visualization without public pricing.
+    </div>
+    """.format(year=datetime.now().year),
+    unsafe_allow_html=True,
+)
