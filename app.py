@@ -109,7 +109,7 @@ def risk_reduction_label(pct):
 OPS_REDUCTION = {"Minimum": 0.35, "Standard": 0.25, "Advanced": 0.15}
 PHISH_REDUCTION = {"Minimum": 0.30, "Standard": 0.22, "Advanced": 0.15}
 INCIDENTS_DIVISOR = {"Minimum": 120.0, "Standard": 180.0, "Advanced": 260.0}
-LOSS_PER_INCIDENT = 15000.0
+LOSS_PER_INCIDENT = 25000.0
 MAX_ANNUAL_INCIDENTS = 8.0
 MIN_ANNUAL_INCIDENTS = 0.2
 
@@ -159,7 +159,7 @@ with st.form(key="roi_form", clear_on_submit=False):
     level = st.selectbox("Current security/control level", ["Minimum", "Standard", "Advanced"], index=0,
                          help="Reflects your current state. Lower current level ⇒ larger potential savings.")
     hipaa = st.selectbox("HIPAA compliance required?", ["Yes", "No"], index=0)
-    hourly = st.number_input("Blended labor cost ($/hour) (optional)", min_value=0.0, step=1.0, value=45.0,
+    hourly = st.number_input("Blended labor cost ($/hour) (optional)", min_value=0.0, step=1.0, value=65.0,
                              help="Used for labor savings. Default reflects a typical blended rate for SMBs.")
     devices_opt = st.number_input("Endpoints / devices (optional)", min_value=0, step=1, value=0,
                                   help="Leave 0 to auto-estimate as ~1.2 × staff.")
@@ -407,3 +407,4 @@ st.markdown(
     """.format(year=datetime.now().year),
     unsafe_allow_html=True,
 )
+
